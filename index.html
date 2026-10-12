@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script src="./support.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.4.4/build/qrcode.min.js"></script>
 </head>
 <body>
 <x-dc>
@@ -89,7 +90,7 @@ const DEFAULT_TICKET = ['==============================', '{store}', '==========
 // Mismo ticket que la tablet (tablets-sweepstouch/libs/utils/rawBt.ts): texto
 // monospace en un canvas que RawBT recibe como imagen. Una línea cuya variable
 // sale vacía (el opt-in de CEOs no da cupón) no se imprime.
-function printTicket(cfg, data) {
+async function printTicket(cfg, data) {
   const now = new Date();
   const vars = { store: (data.store || '').toUpperCase(), phone: data.phone, coupon: data.coupon || '', date: now.toLocaleDateString(), time: now.toLocaleTimeString(), sweepstake: (data.sweepstake || '').toUpperCase() };
   const lines = [];
@@ -98,14 +99,21 @@ function printTicket(cfg, data) {
     const out = line.replace(/\{(\w+)\}/g, (m, k) => { if (!(k in vars)) return m; if (!vars[k]) empty = true; return vars[k]; });
     if (!empty) lines.push(out);
   }
-  const lh = 34, pad = 24;
+  // QR al final del ticket con sólo el teléfono (sorteo con "¿Tiene QR en Ticket?").
+  let qr = null;
+  if (cfg.hasQr && window.QRCode) {
+    qr = document.createElement('canvas');
+    try { await QRCode.toCanvas(qr, data.phone, { errorCorrectionLevel: 'H', margin: 1, scale: 4 }); } catch (e) { qr = null; }
+  }
+  const lh = 34, pad = 24, qrSize = 220;
   const canvas = document.createElement('canvas');
   canvas.width = 576;
-  canvas.height = pad * 2 + lines.length * lh;
+  canvas.height = pad * 2 + lines.length * lh + (qr ? qrSize + 16 : 0);
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = 'white'; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = 'black'; ctx.font = '26px monospace'; ctx.textBaseline = 'top';
   lines.forEach((l, i) => ctx.fillText(l, 16, pad + i * lh, canvas.width - 32));
+  if (qr) ctx.drawImage(qr, (canvas.width - qrSize) / 2, pad + lines.length * lh + 16, qrSize, qrSize);
   const img = canvas.toDataURL('image/png');
   // RawBT toma un iframe por trabajo; juntos se pisan, por eso van espaciados.
   const copies = Math.min(Math.max(Number(cfg.copies) || 1, 1), 5);
@@ -147,7 +155,7 @@ class Component extends DCLogic {
         storeId, storeName: store.name || '', name: sw.name || '',
         // Sin printTicket guardado = imprime (lo de siempre salvo el opt-in genérico).
         print: sw.printTicket ?? sw.optinType !== 'generic',
-        copies: sw.ticketCopies || 1, template: sw.ticketTemplate || ''
+        copies: sw.ticketCopies || 1, template: sw.ticketTemplate || '', hasQr: !!sw.hasQr
       };
       this.setState({ cfg: this.cfg });
     } catch (e) {
@@ -161,7 +169,7 @@ class Component extends DCLogic {
     if (this.state.busy) return;
     if (this.state.digits.length !== 10) { this.setState(s => ({ error: this.T[s.lang].errLen, shake: s.shake + 1 })); return; }
     if (!this.cfg?.storeId) { await this.loadConfig(); if (!this.cfg?.storeId) return; }
-    const { storeId, storeName, name, print, copies, template } = this.cfg;
+    const { storeId, storeName, name, print, copies, template, hasQr } = this.cfg;
     const phone = this.state.digits;
     this.setState({ busy: true, error: '' });
     let resp;
@@ -176,7 +184,7 @@ class Component extends DCLogic {
       this.setState(s => ({ busy: false, error: e.message || 'No se pudo registrar. Intenta de nuevo.', shake: s.shake + 1 }));
       return;
     }
-    if (print) printTicket({ copies, template }, { store: storeName, phone, coupon: resp.coupon, sweepstake: name });
+    if (print) printTicket({ copies, template, hasQr }, { store: storeName, phone, coupon: resp.coupon, sweepstake: name });
     this.setState({ busy: false });
     const secs = Number(this.props.resetSeconds ?? 12);
     this.setState({ step: 'done', countdown: secs });
